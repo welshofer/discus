@@ -1,0 +1,21 @@
+menu "Discus Dashboard"
+
+    config DISCUS_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            Overridden by main/wifi_creds.h when that file exists.
+
+    config DISCUS_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config DISCUS_AGENT_URL
+        string "Agent metrics URL"
+        default "http://192.168.0.52:8787/metrics"
+        help
+            Where discus_agent.py is running on your Mac. Plain HTTP by
+            design: the agent handles TLS to upstream APIs so the MCU does
+            not have to.
+
+endmenu

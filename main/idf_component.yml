@@ -1,0 +1,13 @@
+dependencies:
+  idf: ">=5.5"
+
+  # Waveshare BSP for the round-display ("XC") ESP32-P4 boards.
+  # Covers both the 3.4C (800x800) and our 4C (720x720); the panel is
+  # chosen via CONFIG_BSP_LCD_TYPE_720_720_4_INCH in sdkconfig.defaults.
+  # Brings in: JD9365 MIPI-DSI panel, GT911 touch, ES8311 codec, LVGL 9.
+  waveshare/esp32_p4_wifi6_touch_lcd_xc: "^3.0.1"
+
+  # The P4 has no radio of its own. Wi-Fi 6 / BLE live on the onboard
+  # ESP32-C6-MINI-1, reached over SDIO. esp_wifi_remote provides the
+  # familiar esp_wifi_* API and pulls in esp_hosted as the transport.
+  espressif/esp_wifi_remote: "^1.6"

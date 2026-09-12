@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firmware:
+    name: ESP32-P4 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # main/wifi_creds.h is intentionally absent in CI. discus_main.c guards
+      # its include with __has_include, so the build falls back to the empty
+      # menuconfig defaults and still compiles.
+      - name: Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: esp32p4
+          path: '.'
+
+      - name: Report binary size
+        run: |
+          ls -la build/discus.bin
+          echo "size: $(stat -c%s build/discus.bin) bytes"
+
+  agent:
+    name: Mac agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m compileall -q agent/discus_agent.py
+      - name: Lint
+        run: |
+          pip install --quiet ruff
+          ruff check agent/discus_agent.py --select E9,F63,F7,F82

@@ -1,0 +1,7 @@
+# Board has 32MB NOR flash, so we are not short of room.
+# LVGL 9 + esp-hosted + Wi-Fi easily exceeds the default 1MB app partition.
+# Name,     Type, SubType,  Offset,  Size,  Flags
+nvs,        data, nvs,      ,        24K,
+phy_init,   data, phy,      ,        4K,
+factory,    app,  factory,  ,        6M,
+storage,    data, spiffs,   ,        8M,

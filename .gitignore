@@ -1,0 +1,14 @@
+# Build output
+build/
+managed_components/
+dependencies.lock
+
+# Machine-specific ESP-IDF config (regenerate from sdkconfig.defaults)
+sdkconfig
+sdkconfig.old
+
+# WiFi credentials -- never commit
+main/wifi_creds.h
+
+# macOS
+.DS_Store

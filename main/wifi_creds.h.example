@@ -1,0 +1,16 @@
+/* Copy to main/wifi_creds.h and fill in your network.
+ *
+ * That file is gitignored, and discus_main.c picks it up automatically via
+ * __has_include, overriding the (empty) menuconfig defaults at build time.
+ * Keeping credentials here rather than in sdkconfig means they never reach
+ * version control.
+ *
+ * NOTE: after creating wifi_creds.h for the first time, run
+ *   touch main/discus_main.c
+ * before building. The object file was compiled when this header did not
+ * exist, so ninja has no recorded dependency on it and will not rebuild.
+ */
+#pragma once
+
+#define DISCUS_WIFI_SSID_OVERRIDE     "your-ssid"
+#define DISCUS_WIFI_PASSWORD_OVERRIDE "your-password"

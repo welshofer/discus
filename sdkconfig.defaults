@@ -1,0 +1,58 @@
+# ── Target ────────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32p4"
+
+# ── Flash: onboard 32MB NOR ───────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# ── Partition table ───────────────────────────────────────────────────────
+# The stock 1MB factory partition is far too small once LVGL and the
+# esp-hosted Wi-Fi stack are linked in.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── PSRAM: 32MB in-package, 16-line HEX @ 200MHz ──────────────────────────
+# Mandatory here. Three 720x720 RGB565 framebuffers is ~3.1MB, which will
+# never fit in internal SRAM. Defaults for MODE/SPEED are already correct
+# for the P4 (HEX / 200M), so we only need to switch PSRAM on and let the
+# heap allocator use it.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# Keep scarce internal SRAM for things that genuinely need it.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# ── Panel selection ───────────────────────────────────────────────────────
+# The BSP defaults to the 3.4C (800x800). We have the 4C, so pick 720x720.
+CONFIG_BSP_LCD_TYPE_720_720_4_INCH=y
+
+# ── Wi-Fi via the ESP32-C6 co-processor over SDIO ─────────────────────────
+# esp_hosted 3.x derives the slave target from esp_wifi_remote automatically
+# (CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6), so no explicit slave symbol needed.
+# SDIO pins fall back to the Espressif P4 reference wiring:
+#   CMD=19 CLK=18 D0=14 D1=15 D2=16 D3=17, C6 reset=54
+# Waveshare follows that layout; if the C6 fails to enumerate, these are the
+# first things to re-check against the schematic.
+
+# ── Headroom: LVGL + MIPI-DSI bring-up is stack-hungry ────────────────────
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# ── Fonts used by the dashboard ───────────────────────────────────────────
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+# ── Silicon revision ──────────────────────────────────────────────────────
+# This board carries an early ESP32-P4 (revision v1.3). ESP-IDF 5.5 targets
+# the v3.x (ECO5) silicon by default, and the two lines are MUTUALLY
+# EXCLUSIVE -- per Espressif's own Kconfig, "revisions higher than 3.0 ...
+# [are] not compatible with 0.x and 1.x". Building without these two lines
+# produces a bootloader the chip refuses:
+#   "requires chip revision in range [v3.1 - v3.99] (this chip is v1.3)"
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# Extra fonts used by the carousel panels.
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_FONT_MONTSERRAT_40=y
+CONFIG_LV_FONT_MONTSERRAT_44=y
