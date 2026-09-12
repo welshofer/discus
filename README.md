@@ -1,5 +1,10 @@
 # discus
 
+[![build](https://github.com/welshofer/discus/actions/workflows/build.yml/badge.svg)](https://github.com/welshofer/discus/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.5-red)
+![LVGL](https://img.shields.io/badge/LVGL-9.5-green)
+
 A nine-panel dashboard on a 4-inch round touchscreen, driven by an
 **ESP32-P4**. Swipe between panels or let it rotate on its own every 90
 seconds.
