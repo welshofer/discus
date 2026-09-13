@@ -56,3 +56,14 @@ CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_36=y
 CONFIG_LV_FONT_MONTSERRAT_40=y
 CONFIG_LV_FONT_MONTSERRAT_44=y
+
+# ── Over-the-air updates ──────────────────────────────────────────────────
+# The agent serves firmware over plain HTTP on the LAN; the whole design
+# already assumes a trusted local network and keeps TLS on the Mac.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+
+# Anti-bricking for a device that lives in another room: a freshly flashed
+# image boots in "pending verify" and is only marked valid once it has
+# actually reached the agent. An update that cannot talk to the agent gets
+# rolled back to the previous slot on the next reboot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

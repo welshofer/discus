@@ -16,3 +16,6 @@ void discus_ui_set_stale(int age_s);
 
 /* Current local UTC offset (DST already applied) and its short name. */
 void discus_ui_set_utc_offset(int offset_s, const char *tz);
+
+/* Backlight level 0-100. Ignores values < 0 and no-ops when unchanged. */
+void discus_ui_set_brightness(int pct);

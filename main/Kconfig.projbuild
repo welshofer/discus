@@ -18,4 +18,12 @@ menu "Discus Dashboard"
             design: the agent handles TLS to upstream APIs so the MCU does
             not have to.
 
+    config DISCUS_OTA_URL
+        string "Firmware manifest URL"
+        default "http://192.168.0.52:8787/firmware.json"
+        help
+            The agent serves /firmware.json and /firmware.bin straight from
+            build/discus.bin. The device compares the manifest version against
+            its own, so a rebuild is all it takes to publish an update.
+
 endmenu

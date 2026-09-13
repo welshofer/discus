@@ -82,6 +82,12 @@ typedef struct {
 } discus_clock_t;
 
 typedef struct {
+    int  brightness;           /* 0-100, decided by the agent */
+    char phase[12];            /* day / evening / night */
+} discus_display_t;
+
+typedef struct {
+    discus_display_t display;
     discus_clock_t   clock;
     discus_system_t  sys;
     discus_weather_t weather;

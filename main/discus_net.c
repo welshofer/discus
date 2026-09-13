@@ -98,6 +98,15 @@ static esp_err_t parse(const char *body, discus_data_t *out)
     }
     memset(out, 0, sizeof(*out));
 
+    const cJSON *disp = cJSON_GetObjectItemCaseSensitive(root, "display");
+    if (cJSON_IsObject(disp)) {
+        /* -1 means "no opinion"; the device then leaves brightness alone. */
+        out->display.brightness = (int)jnum(disp, "brightness", -1);
+        jstr(disp, "phase", out->display.phase, sizeof out->display.phase);
+    } else {
+        out->display.brightness = -1;
+    }
+
     const cJSON *clk = cJSON_GetObjectItemCaseSensitive(root, "clock");
     if (cJSON_IsObject(clk)) {
         out->clock.epoch        = jll(clk, "epoch");

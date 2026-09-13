@@ -1,7 +1,11 @@
-# Board has 32MB NOR flash, so we are not short of room.
-# LVGL 9 + esp-hosted + Wi-Fi easily exceeds the default 1MB app partition.
+# 32MB NOR flash. Two 6MB app slots so firmware can be replaced over WiFi
+# without a USB cable -- changing this layout later would itself require one
+# last cable connection, which is why it is worth doing up front.
+#
 # Name,     Type, SubType,  Offset,  Size,  Flags
 nvs,        data, nvs,      ,        24K,
+otadata,    data, ota,      ,        8K,
 phy_init,   data, phy,      ,        4K,
-factory,    app,  factory,  ,        6M,
+ota_0,      app,  ota_0,    ,        6M,
+ota_1,      app,  ota_1,    ,        6M,
 storage,    data, spiffs,   ,        8M,

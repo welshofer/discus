@@ -27,6 +27,7 @@
 #include "discus_data.h"
 #include "discus_net.h"
 #include "discus_ui.h"
+#include "discus_ota.h"
 
 static const char *TAG = "discus";
 
@@ -136,6 +137,11 @@ static void poll_task(void *arg)
             if (err == ESP_OK) {
                 last_ok_us = esp_timer_get_time();
 
+                /* Reaching the agent is our definition of "this build works".
+                 * Until this runs, a freshly OTA'd image is still on
+                 * probation and a reboot would roll it back. */
+                discus_ota_confirm_running();
+
                 /* Adopt the agent's wall clock, but only when we have
                  * genuinely drifted: re-setting every 3s would make a
                  * seconds display stutter backwards. Between corrections the
@@ -153,6 +159,7 @@ static void poll_task(void *arg)
                     }
                 }
                 discus_ui_set_utc_offset(data.clock.utc_offset_s, data.clock.tz);
+                discus_ui_set_brightness(data.display.brightness);
                 discus_ui_update(&data);
             }
         }
@@ -197,5 +204,6 @@ void app_main(void)
     wifi_start();   /* non-fatal: the panels still render, just without data */
 
     xTaskCreatePinnedToCore(poll_task, "discus_poll", 6144, NULL, 4, NULL, 1);
+    discus_ota_start();
     ESP_LOGI(TAG, "polling %s every %d ms", CONFIG_DISCUS_AGENT_URL, POLL_INTERVAL_MS);
 }

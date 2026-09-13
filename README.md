@@ -85,6 +85,19 @@ with `curl`. Every upstream API call, TLS handshake and API key stays on the
 Mac. Each source is cached on its own TTL and refreshed by a background
 thread, so a device request never blocks on a slow upstream.
 
+### Tests
+
+```sh
+uv run agent/test_agent.py         # 28 tests, no network required
+```
+
+Focused on logic that fails *silently*: Claude usage dedup, the Google News
+suffix regex, market-status mapping and the adaptive stock cadence. Verified
+by mutation testing -- deliberately reintroducing each of six known bugs
+(dropping `message.id` dedup, counting tool results as prompts, including
+sidechain prompts, `timegm` -> `mktime`, dropping the headline regex, losing
+the weekday/weekend split) makes the suite fail.
+
 ### Panels
 
 | # | Panel | Source |
@@ -144,6 +157,48 @@ corrections the ESP32 keeps its own time, so **the clock carries on ticking
 while the Mac is asleep** -- it is the one panel that stays useful when the
 agent is unreachable. Local fields come from `gmtime_r(now + offset)`, which
 sidesteps tzdata entirely.
+
+### Over-the-air updates
+
+The agent serves `/firmware.json` and `/firmware.bin` straight out of
+`build/discus.bin`. The device compares the manifest version against its own
+`esp_app_get_description()->version` -- both read the same string ESP-IDF
+bakes in from `git describe`, so there is no separate version file to bump.
+Rebuild and the update publishes itself; the device picks it up within five
+minutes.
+
+```sh
+./dev.sh build          # that is the whole release process
+```
+
+**Anti-bricking.** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` means a freshly
+flashed image boots in `ESP_OTA_IMG_PENDING_VERIFY` and is confirmed only
+once it has actually reached the agent. Push firmware that cannot join WiFi
+or find the Mac and the bootloader reverts to the other slot on next boot --
+which matters when the device is in another room.
+
+> **One last cable.** Enabling this changed the partition table from a single
+> `factory` slot to `ota_0`/`ota_1` + `otadata`, and a partition layout can
+> only be written over USB. Connect the board once and run `./dev.sh flash`;
+> every update after that is wireless. (If the bootloader refuses the new
+> layout, `./dev.sh erase-flash` then flash again.)
+
+### Night dimming
+
+The agent decides brightness and the device just applies it, so the schedule
+is tunable without a reflash:
+
+| Phase | Level |
+|---|---|
+| sunrise to sunset | 100% |
+| sunset to 23:00 | 45% |
+| 23:00 to sunrise | 12% |
+
+Sunrise and sunset come from Open-Meteo (already fetched for the weather
+panel) for the actual location, so the schedule tracks the seasons. If
+weather is unavailable it falls back to a fixed 07:00-21:00 day, rather than
+leaving the panel at full output all night because an API failed. Tune
+`DISPLAY_DAY` / `DISPLAY_EVENING` / `DISPLAY_NIGHT` at the top of the agent.
 
 ### Running it permanently (launchd)
 

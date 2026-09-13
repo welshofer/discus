@@ -727,6 +727,23 @@ void discus_ui_set_stale(int age_s)
     bsp_display_unlock();
 }
 
+void discus_ui_set_brightness(int pct)
+{
+    static int applied = -1;
+
+    if (pct < 0) return;                 /* agent has no opinion */
+    if (pct > 100) pct = 100;
+    if (pct == applied) return;          /* LEDC write only on real change */
+
+    esp_err_t err = bsp_display_brightness_set(pct);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "brightness -> %d%%", pct);
+        applied = pct;
+    } else {
+        ESP_LOGW(TAG, "brightness %d%% failed: %s", pct, esp_err_to_name(err));
+    }
+}
+
 void discus_ui_set_utc_offset(int offset_s, const char *tz)
 {
     s_utc_offset = offset_s;

@@ -58,6 +58,14 @@ HOST_LABEL = "MacBook Pro"
 # Note POST_MKT covers both weekday after-hours AND the whole weekend (CNBC
 # reports the last session's state rather than a separate weekend value), so
 # "Closed" is the honest label for the common case.
+# Display brightness by time of day. Driven from here rather than compiled
+# into the firmware so the schedule can be tuned without a reflash -- the
+# device just applies whatever percentage arrives.
+DISPLAY_DAY = 100          # sunrise -> sunset
+DISPLAY_EVENING = 45       # sunset -> EVENING_ENDS_HOUR
+DISPLAY_NIGHT = 12         # through to sunrise
+EVENING_ENDS_HOUR = 23
+
 MARKET_STATUS = {
     "REG_MKT":  "Open",
     "PRE_MKT":  "Pre-market",
@@ -174,7 +182,7 @@ def fetch_weather():
            f"?latitude={loc['lat']}&longitude={loc['lon']}"
            "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
            "weather_code,wind_speed_10m"
-           "&daily=temperature_2m_max,temperature_2m_min"
+           "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
            "&timezone=auto&forecast_days=1")
     d = http_json(url)
     cur, daily = d["current"], d["daily"]
@@ -194,6 +202,10 @@ def fetch_weather():
         "lo_c": round(float(daily["temperature_2m_min"][0]), 1),
         # US gets Fahrenheit; everyone else Celsius.
         "unit": "F" if loc["country"] == "US" else "C",
+        # Open-Meteo returns these in the location's own timezone
+        # (timezone=auto), so they parse as local wall-clock times.
+        "sunrise": daily.get("sunrise", [None])[0],
+        "sunset": daily.get("sunset", [None])[0],
     }
 
 
@@ -510,6 +522,44 @@ def system_metrics():
     }
 
 
+def _local_hhmm(iso_local):
+    """"2026-09-12T06:47" -> minutes past local midnight, or None."""
+    if not iso_local or "T" not in iso_local:
+        return None
+    try:
+        hh, mm = iso_local.split("T", 1)[1].split(":")[:2]
+        return int(hh) * 60 + int(mm)
+    except (ValueError, IndexError):
+        return None
+
+
+def display_policy():
+    """Brightness for right now.
+
+    Prefers real sunrise/sunset from the weather source; falls back to a
+    fixed 07:00-21:00 schedule when weather is unavailable, so the panel is
+    never left blazing at full output overnight just because an API failed."""
+    lt = time.localtime()
+    now_min = lt.tm_hour * 60 + lt.tm_min
+
+    wx, _age, _err = WEATHER.snapshot()
+    sunrise = _local_hhmm((wx or {}).get("sunrise"))
+    sunset = _local_hhmm((wx or {}).get("sunset"))
+    source = "sun"
+    if sunrise is None or sunset is None:
+        sunrise, sunset, source = 7 * 60, 21 * 60, "fallback"
+
+    if sunrise <= now_min < sunset:
+        level, phase = DISPLAY_DAY, "day"
+    elif now_min >= sunset and now_min < EVENING_ENDS_HOUR * 60:
+        level, phase = DISPLAY_EVENING, "evening"
+    else:
+        level, phase = DISPLAY_NIGHT, "night"
+
+    return {"brightness": level, "phase": phase, "source": source,
+            "sunrise": sunrise, "sunset": sunset}
+
+
 def clock_info():
     """Wall-clock time for the device.
 
@@ -543,6 +593,7 @@ def build_payload():
     return {
         "ts": int(time.time()),
         "clock": clock_info(),
+        "display": display_policy(),
         "system": system_metrics(),
         "weather": {"ok": weather is not None, "age_s": w_age,
                     "err": w_err, **(weather or {})},
@@ -555,15 +606,87 @@ def build_payload():
     }
 
 
+# ── firmware serving (OTA) ────────────────────────────────────────────────
+FIRMWARE_BIN = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "build", "discus.bin")
+
+
+def firmware_info():
+    """Version string straight out of the built image.
+
+    esp_app_desc_t sits at offset 0x20 (24-byte image header + 8-byte segment
+    header): magic word, secure_version, 8 reserved bytes, then a 32-byte
+    version string that ESP-IDF fills from `git describe`. Reading it here
+    means the agent and the device are comparing the exact same value, with
+    no separate version file to forget to bump."""
+    st = os.stat(FIRMWARE_BIN)
+    with open(FIRMWARE_BIN, "rb") as f:
+        head = f.read(0x100)
+    magic = int.from_bytes(head[0x20:0x24], "little")
+    if magic != 0xABCD5432:
+        raise RuntimeError(f"bad app descriptor magic 0x{magic:08X}")
+    return {
+        "version": head[0x30:0x50].split(b"\0")[0].decode("utf-8", "replace"),
+        "project": head[0x50:0x70].split(b"\0")[0].decode("utf-8", "replace"),
+        "size": st.st_size,
+        "built": int(st.st_mtime),
+    }
+
+
 _hits = {"count": 0, "last_client": "", "last_ts": 0}
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj, separators=(",", ":")).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_firmware_manifest(self):
+        try:
+            info = firmware_info()
+        except (OSError, RuntimeError) as e:                  # noqa: BLE001
+            self._send_json({"ok": False, "err": str(e)}, 503)
+            return
+        host = self.headers.get("Host") or f"{lan_ip()}:{PORT}"
+        info["ok"] = True
+        info["url"] = f"http://{host}/firmware.bin"
+        self._send_json(info)
+
+    def _serve_firmware_bin(self):
+        try:
+            size = os.path.getsize(FIRMWARE_BIN)
+            f = open(FIRMWARE_BIN, "rb")
+        except OSError as e:                                  # noqa: BLE001
+            self.send_error(503, str(e))
+            return
+        with f:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            while True:
+                chunk = f.read(16384)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
     def do_GET(self):                                        # noqa: N802
-        if self.path.split("?")[0] not in ("/metrics", "/"):
-            self.send_error(404, "try /metrics")
+        path = self.path.split("?")[0]
+        if path == "/firmware.json":
+            self._serve_firmware_manifest()
+            return
+        if path == "/firmware.bin":
+            self._serve_firmware_bin()
+            return
+        if path not in ("/metrics", "/"):
+            self.send_error(404, "try /metrics, /firmware.json or /firmware.bin")
             return
         _hits["count"] += 1
         _hits["last_client"] = self.client_address[0]
