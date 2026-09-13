@@ -213,37 +213,36 @@ def stocks_ttl():
     return 300                         # closed, or the weekend
 
 
-def fetch_stocks():
-    syms = "|".join(TICKERS)
-    url = ("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/"
-           f"symbol?symbols={urllib.parse.quote(syms)}&requestMethod=itv&noform=1"
-           "&partnerId=2&fund=1&exthrs=1&output=json")
-    d = http_json(url)
-    q = d["FormattedQuoteResult"]["FormattedQuote"]
-    if isinstance(q, dict):
+def _to_float(v, dflt=0.0):
+    try:
+        return float(str(v or "").replace(",", "").replace("%", "").replace("+", ""))
+    except ValueError:
+        return dflt
+
+
+def parse_quotes(doc, tickers=None):
+    """CNBC quote payload -> list of quote dicts, in the caller's order.
+
+    Also records the raw market status so stocks_ttl() can pick a cadence."""
+    global _last_mkt_raw
+    tickers = TICKERS if tickers is None else tickers
+
+    q = doc["FormattedQuoteResult"]["FormattedQuote"]
+    if isinstance(q, dict):                  # single-symbol responses are not a list
         q = [q]
     by_sym = {it.get("symbol"): it for it in q}
 
     out = []
-    for sym in TICKERS:                 # preserve the order the user asked for
+    for sym in tickers:                      # preserve the requested order
         it = by_sym.get(sym)
         if not it:
             continue
-        pct_raw = (it.get("change_pct") or "0").replace("%", "").replace("+", "")
-        try:
-            pct = float(pct_raw)
-        except ValueError:
-            pct = 0.0
-        try:
-            last = float((it.get("last") or "0").replace(",", ""))
-        except ValueError:
-            last = 0.0
-        global _last_mkt_raw
+        pct = _to_float(it.get("change_pct"))
         raw_status = (it.get("curmktstatus") or "").upper()
         _last_mkt_raw = raw_status
         out.append({
             "sym": sym,
-            "last": last,
+            "last": _to_float(it.get("last")),
             "pct": pct,
             "up": (it.get("changetype", "").upper() != "DOWN") and pct >= 0,
             "status": MARKET_STATUS.get(raw_status, raw_status.title()),
@@ -253,24 +252,42 @@ def fetch_stocks():
     return out
 
 
+def fetch_stocks():
+    syms = "|".join(TICKERS)
+    url = ("https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/"
+           f"symbol?symbols={urllib.parse.quote(syms)}&requestMethod=itv&noform=1"
+           "&partnerId=2&fund=1&exthrs=1&output=json")
+    return parse_quotes(http_json(url))
+
+
+def clean_headline(title):
+    """Normalise whitespace and drop Google News' trailing " - Publisher".
+
+    That suffix appears on every Google News item, costs a whole line on a
+    470px-wide label, and the source is already shown in the panel header."""
+    t = re.sub(r"\s+", " ", (title or "").strip())
+    return re.sub(r"\s+-\s+[^-]{2,40}$", "", t)
+
+
+def parse_feed(xml_text, limit=None):
+    """RSS/Atom-ish XML -> list of cleaned headline strings."""
+    limit = MAX_HEADLINES if limit is None else limit
+    root = ET.fromstring(xml_text)
+    items = []
+    for item in root.iterfind(".//item"):
+        t = clean_headline(item.findtext("title"))
+        if t:
+            items.append(t)
+        if len(items) >= limit:
+            break
+    if not items:
+        raise RuntimeError("no headlines parsed")
+    return items
+
+
 def make_news_fetcher(feed):
     def fetch():
-        xml = http_text(feed["url"])
-        root = ET.fromstring(xml)
-        items = []
-        for item in root.iterfind(".//item"):
-            t = (item.findtext("title") or "").strip()
-            t = re.sub(r"\s+", " ", t)
-            # Google News appends " - Publisher" to every headline; it eats
-            # scarce screen width and the source is already in the header.
-            t = re.sub(r"\s+-\s+[^-]{2,40}$", "", t)
-            if t:
-                items.append(t)
-            if len(items) >= MAX_HEADLINES:
-                break
-        if not items:
-            raise RuntimeError("no headlines parsed")
-        return items
+        return parse_feed(http_text(feed["url"]))
     return fetch
 
 
