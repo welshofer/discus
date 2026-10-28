@@ -11,3 +11,9 @@ dependencies:
   # ESP32-C6-MINI-1, reached over SDIO. esp_wifi_remote provides the
   # familiar esp_wifi_* API and pulls in esp_hosted as the transport.
   espressif/esp_wifi_remote: "^1.6"
+
+  # LVGL 9.6.0 (Sept 2026) added a conditional espressif/freetype dependency
+  # that makes the component solver fail with MissingKconfigError:
+  # LV_USE_FREETYPE on a fresh build. Hold the BSP's LVGL at 9.5.x, the
+  # version the last green build used, until that's sorted upstream.
+  lvgl/lvgl: "~9.5.0"
