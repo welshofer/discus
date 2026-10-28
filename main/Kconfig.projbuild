@@ -16,7 +16,18 @@ menu "Discus Dashboard"
         help
             Where discus_agent.py is running on your Mac. Plain HTTP by
             design: the agent handles TLS to upstream APIs so the MCU does
-            not have to.
+            not have to. Requests carry DISCUS_AGENT_TOKEN, and firmware
+            updates are signature-checked, so the plain link is not trusted
+            for anything that matters.
+
+    config DISCUS_AGENT_TOKEN
+        string "Agent shared token"
+        default ""
+        help
+            Sent as X-Discus-Token on every request. Must match the agent's
+            DISCUS_TOKEN. Overridden by DISCUS_AGENT_TOKEN_OVERRIDE in
+            main/wifi_creds.h, which is the better place for it because that
+            file is gitignored.
 
     config DISCUS_OTA_URL
         string "Firmware manifest URL"
@@ -25,5 +36,7 @@ menu "Discus Dashboard"
             The agent serves /firmware.json and /firmware.bin straight from
             build/discus.bin. The device compares the manifest version against
             its own, so a rebuild is all it takes to publish an update.
+            An image is only made bootable if its ECDSA-P256 signature
+            verifies against main/ota_pubkey.pem, compiled in at build time.
 
 endmenu

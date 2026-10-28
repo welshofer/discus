@@ -4,7 +4,8 @@
  * The device deliberately polls rather than being pushed to. Polling means no
  * held socket, no reconnect state machine on the MCU, and the whole contract
  * is reproducible from a laptop with `curl`. The agent does the TLS and the
- * API keys; nothing secret lives on this side.
+ * API keys; the only secrets on this side are the WiFi password and the
+ * shared agent token.
  */
 
 #include <string.h>
@@ -14,6 +15,7 @@
 #include "cJSON.h"
 
 #include "discus_net.h"
+#include "discus_creds.h"
 
 static const char *TAG = "discus_net";
 
@@ -227,6 +229,7 @@ esp_err_t discus_net_fetch(const char *url, discus_data_t *out)
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { free(buf); return ESP_FAIL; }
+    discus_add_token(c);
 
     esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
@@ -238,7 +241,8 @@ esp_err_t discus_net_fetch(const char *url, discus_data_t *out)
         return err;
     }
     if (status != 200) {
-        ESP_LOGW(TAG, "HTTP %d", status);
+        ESP_LOGW(TAG, "HTTP %d%s", status,
+                 status == 401 ? " (agent token missing or wrong)" : "");
         free(buf);
         return ESP_FAIL;
     }

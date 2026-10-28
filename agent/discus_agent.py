@@ -20,9 +20,23 @@ than dropping the panel.
 
 Run:  ./agent/discus_agent.py          (uv installs psutil on first run)
 Test: curl -s localhost:8787/metrics | python3 -m json.tool
+
+Network exposure
+----------------
+By default the agent listens on 127.0.0.1 only. The display reaches it over
+the LAN, so for real use you opt in explicitly:
+
+    DISCUS_TOKEN=... ./agent/discus_agent.py --bind 0.0.0.0
+
+Any non-loopback bind requires a shared token (DISCUS_TOKEN or --token-file),
+and every request must then carry it in the X-Discus-Token header. The agent
+refuses to start on the LAN without one.
 """
 
+import argparse
 import calendar
+import hmac
+import ipaddress
 import json
 import os
 import re
@@ -44,6 +58,8 @@ import psutil
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
 PORT = 8787
+DEFAULT_BIND = "127.0.0.1"
+TOKEN_HEADER = "X-Discus-Token"
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
@@ -609,6 +625,10 @@ def build_payload():
 # ── firmware serving (OTA) ────────────────────────────────────────────────
 FIRMWARE_BIN = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "build", "discus.bin")
+# Written by agent/ota_sign.py (dev.sh runs it after every build). The device
+# refuses any image whose signature does not verify against the public key
+# compiled into it, so serving the .sig is what makes an update installable.
+FIRMWARE_SIG = FIRMWARE_BIN + ".sig"
 
 
 def firmware_info():
@@ -625,12 +645,38 @@ def firmware_info():
     magic = int.from_bytes(head[0x20:0x24], "little")
     if magic != 0xABCD5432:
         raise RuntimeError(f"bad app descriptor magic 0x{magic:08X}")
+
+    # An image rebuilt after it was signed would only be rejected by the
+    # device after a full download, so say so here instead.
+    try:
+        sst = os.stat(FIRMWARE_SIG)
+    except OSError:
+        raise RuntimeError("firmware is not signed; run agent/ota_sign.py sign") \
+            from None
+    if sst.st_mtime_ns < st.st_mtime_ns:
+        raise RuntimeError("firmware signature is older than the image; "
+                           "run agent/ota_sign.py sign")
+    with open(FIRMWARE_SIG, "rb") as f:
+        sig = f.read()
+    if not 8 <= len(sig) <= 80:     # DER ECDSA-P256 is at most 72 bytes
+        raise RuntimeError(f"implausible signature length {len(sig)}")
+
     return {
         "version": head[0x30:0x50].split(b"\0")[0].decode("utf-8", "replace"),
         "project": head[0x50:0x70].split(b"\0")[0].decode("utf-8", "replace"),
         "size": st.st_size,
         "built": int(st.st_mtime),
+        "sig": sig.hex(),
     }
+
+
+def authorized(headers, token):
+    """True if the request may be served. No token configured means a
+    loopback-only agent, where anything that can connect is already local."""
+    if not token:
+        return True
+    got = headers.get(TOKEN_HEADER) or ""
+    return hmac.compare_digest(got.encode(), token.encode())
 
 
 _hits = {"count": 0, "last_client": "", "last_ts": 0}
@@ -638,6 +684,7 @@ _hits = {"count": 0, "last_client": "", "last_ts": 0}
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    token = None            # set by main(); see authorized()
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, separators=(",", ":")).encode()
@@ -654,7 +701,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as e:                  # noqa: BLE001
             self._send_json({"ok": False, "err": str(e)}, 503)
             return
-        host = self.headers.get("Host") or f"{lan_ip()}:{PORT}"
+        host = self.headers.get("Host") or f"{lan_ip()}:{self.server.server_port}"
         info["ok"] = True
         info["url"] = f"http://{host}/firmware.bin"
         self._send_json(info)
@@ -678,6 +725,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def do_GET(self):                                        # noqa: N802
+        if not authorized(self.headers, self.token):
+            self.send_error(401, f"missing or wrong {TOKEN_HEADER}")
+            return
         path = self.path.split("?")[0]
         if path == "/firmware.json":
             self._serve_firmware_manifest()
@@ -723,14 +773,59 @@ def lan_ip():
         s.close()
 
 
-def main():
+def is_loopback(host):
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False        # a hostname we cannot vouch for: treat as LAN
+
+
+def parse_config(argv=None, env=None):
+    """Resolve bind address and token from flags and the environment.
+
+    Loopback is the default. Binding anywhere else is an explicit choice and
+    needs a token, because everything the agent serves -- host stats, your
+    location, Claude usage and a firmware image with your WiFi password in
+    it -- would otherwise be readable by anyone on the network."""
+    env = os.environ if env is None else env
+    p = argparse.ArgumentParser(description="discus dashboard agent")
+    p.add_argument("--bind", default=env.get("DISCUS_BIND", DEFAULT_BIND),
+                   help="listen address (default %(default)s; env DISCUS_BIND). "
+                        "Use 0.0.0.0 or your LAN IP so the display can reach it.")
+    p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--token-file",
+                   help="file holding the shared token (else env DISCUS_TOKEN)")
+    a = p.parse_args(argv)
+
+    token = env.get("DISCUS_TOKEN") or None
+    if a.token_file:
+        with open(a.token_file, encoding="utf-8") as f:
+            token = f.read().strip() or None
+    if not is_loopback(a.bind) and not token:
+        p.error(f"--bind {a.bind} exposes the agent to the network; set "
+                "DISCUS_TOKEN or --token-file (and the same token in the "
+                "firmware's wifi_creds.h)")
+    if token and len(token) < 16:
+        p.error("token is too short; use at least 16 characters "
+                "(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')")
+    return a.bind, a.port, token
+
+
+def main(argv=None):
+    bind, port, token = parse_config(argv)
+    Handler.token = token
+
     threading.Thread(target=cpu_sampler, daemon=True).start()
     for s in SOURCES:
         s.refresh(force=True)
     threading.Thread(target=refresher, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"discus agent on http://{lan_ip()}:{PORT}/metrics")
+    srv = ThreadingHTTPServer((bind, port), Handler)
+    shown = lan_ip() if bind in ("0.0.0.0", "") else bind
+    print(f"discus agent on http://{shown}:{port}/metrics "
+          f"({'token required' if token else 'loopback only, no token'})")
     for s in SOURCES:
         _, age, err = s.snapshot()
         print(f"  {s.name:<9} {'ok' if err is None else 'FAILED: ' + err}")

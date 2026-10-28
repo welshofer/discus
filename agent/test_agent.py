@@ -1,9 +1,9 @@
 #!/usr/bin/env -S uv run --quiet
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["psutil>=5.9", "certifi>=2024.0"]
+# dependencies = ["psutil>=5.9", "certifi>=2024.0", "cryptography>=41"]
 # ///
-"""Tests for the discus agent's parsing and accounting logic.
+"""Tests for the discus agent's parsing, accounting and security logic.
 
 These cover the parts that are subtle, load-bearing, and fail *silently*
 when wrong -- Claude usage dedup especially, where missing the dedup
@@ -13,11 +13,13 @@ Run:  python3 -m unittest discover -s agent -v
 """
 
 import calendar
+import http.client
 import importlib.util
 import json
 import os
 import pathlib
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -286,6 +288,246 @@ class TestClock(unittest.TestCase):
         shifted = time.gmtime(c["epoch"] + c["utc_offset_s"])
         self.assertEqual((local.tm_hour, local.tm_min),
                          (shifted.tm_hour, shifted.tm_min))
+
+
+def _fake_image(path, version=b"v1.2.3-4-gabcdef"):
+    """Just enough of an ESP-IDF app image for firmware_info() to read."""
+    head = bytearray(0x100)
+    head[0x20:0x24] = (0xABCD5432).to_bytes(4, "little")
+    head[0x30:0x30 + len(version)] = version
+    head[0x50:0x56] = b"discus"
+    with open(path, "wb") as f:
+        f.write(bytes(head) + os.urandom(4096))
+
+
+class TestConfig(unittest.TestCase):
+    TOKEN = "t" * 24
+
+    def test_defaults_to_loopback_without_token(self):
+        self.assertEqual(agent.parse_config([], env={}),
+                         ("127.0.0.1", agent.PORT, None))
+
+    def test_lan_bind_without_token_refuses_to_start(self):
+        for bind in ("0.0.0.0", "192.168.0.52", "", "mac.local"):
+            with self.subTest(bind=bind):
+                with self.assertRaises(SystemExit):
+                    agent.parse_config(["--bind", bind], env={})
+
+    def test_lan_bind_via_env_needs_token_too(self):
+        with self.assertRaises(SystemExit):
+            agent.parse_config([], env={"DISCUS_BIND": "0.0.0.0"})
+        self.assertEqual(
+            agent.parse_config([], env={"DISCUS_BIND": "0.0.0.0",
+                                        "DISCUS_TOKEN": self.TOKEN}),
+            ("0.0.0.0", agent.PORT, self.TOKEN))
+
+    def test_token_file(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write(self.TOKEN + "\n")
+        self.addCleanup(os.unlink, f.name)
+        _, _, token = agent.parse_config(
+            ["--bind", "0.0.0.0", "--token-file", f.name], env={})
+        self.assertEqual(token, self.TOKEN)
+
+    def test_short_token_rejected(self):
+        with self.assertRaises(SystemExit):
+            agent.parse_config(["--bind", "0.0.0.0"], env={"DISCUS_TOKEN": "abc"})
+
+    def test_loopback_variants(self):
+        for host in ("127.0.0.1", "127.0.0.53", "localhost", "::1"):
+            self.assertTrue(agent.is_loopback(host), host)
+        for host in ("0.0.0.0", "", "192.168.0.52", "mac.local"):
+            self.assertFalse(agent.is_loopback(host), host)
+
+
+class TestAuthorized(unittest.TestCase):
+    def test_no_token_configured_allows_all(self):
+        self.assertTrue(agent.authorized({}, None))
+
+    def test_token_required_when_configured(self):
+        tok = "s3cret-s3cret-s3cret"
+        self.assertFalse(agent.authorized({}, tok))
+        self.assertFalse(agent.authorized({agent.TOKEN_HEADER: "nope"}, tok))
+        self.assertFalse(agent.authorized({agent.TOKEN_HEADER: tok[:-1]}, tok))
+        self.assertTrue(agent.authorized({agent.TOKEN_HEADER: tok}, tok))
+
+
+class _FirmwareDir(unittest.TestCase):
+    """Points the agent's FIRMWARE_BIN/SIG at a temp dir for one test."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.bin = os.path.join(self.tmp.name, "discus.bin")
+        self.sig = self.bin + ".sig"
+        self._old = agent.FIRMWARE_BIN, agent.FIRMWARE_SIG
+        agent.FIRMWARE_BIN, agent.FIRMWARE_SIG = self.bin, self.sig
+        _fake_image(self.bin)
+
+    def tearDown(self):
+        agent.FIRMWARE_BIN, agent.FIRMWARE_SIG = self._old
+        self.tmp.cleanup()
+
+    def write_sig(self, data=b"\x30" + b"\x01" * 69, newer=True):
+        with open(self.sig, "wb") as f:
+            f.write(data)
+        st = os.stat(self.bin)
+        t = st.st_mtime_ns + (10**9 if newer else -10**9)
+        os.utime(self.sig, ns=(t, t))
+
+
+class TestFirmwareManifest(_FirmwareDir):
+    def test_unsigned_image_is_not_offered(self):
+        with self.assertRaisesRegex(RuntimeError, "not signed"):
+            agent.firmware_info()
+
+    def test_stale_signature_is_not_offered(self):
+        self.write_sig(newer=False)
+        with self.assertRaisesRegex(RuntimeError, "older than the image"):
+            agent.firmware_info()
+
+    def test_implausible_signature_rejected(self):
+        self.write_sig(b"\x30" * 200)
+        with self.assertRaisesRegex(RuntimeError, "implausible"):
+            agent.firmware_info()
+
+    def test_signed_manifest_carries_hex_signature(self):
+        sig = b"\x30\x44" + bytes(range(68))
+        self.write_sig(sig)
+        info = agent.firmware_info()
+        self.assertEqual(info["version"], "v1.2.3-4-gabcdef")
+        self.assertEqual(bytes.fromhex(info["sig"]), sig)
+
+
+class TestServerAuth(_FirmwareDir):
+    """Real HTTP round trips against the handler, on loopback."""
+    TOKEN = "integration-token-0123456789"
+
+    def setUp(self):
+        super().setUp()
+        self.write_sig(b"\x30\x44" + bytes(68))
+        self._old_token = agent.Handler.token
+        agent.Handler.token = self.TOKEN
+        self.srv = agent.ThreadingHTTPServer(("127.0.0.1", 0), agent.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        agent.Handler.token = self._old_token
+        super().tearDown()
+
+    def get(self, path, token=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=5)
+        headers = {agent.TOKEN_HEADER: token} if token else {}
+        c.request("GET", path, headers=headers)
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, body
+
+    def test_every_endpoint_requires_the_token(self):
+        for path in ("/", "/metrics", "/firmware.json", "/firmware.bin", "/nope"):
+            with self.subTest(path=path):
+                self.assertEqual(self.get(path)[0], 401)
+                self.assertEqual(self.get(path, "wrong-token")[0], 401)
+
+    def test_manifest_and_image_served_with_token(self):
+        status, body = self.get("/firmware.json", self.TOKEN)
+        self.assertEqual(status, 200)
+        doc = json.loads(body)
+        self.assertTrue(doc["ok"])
+        self.assertTrue(doc["url"].endswith("/firmware.bin"))
+        self.assertIn("sig", doc)
+
+        status, body = self.get("/firmware.bin", self.TOKEN)
+        self.assertEqual(status, 200)
+        with open(self.bin, "rb") as f:
+            self.assertEqual(body, f.read())
+
+
+def _load_signer():
+    try:
+        import cryptography  # noqa: F401
+    except ImportError:
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "ota_sign", pathlib.Path(__file__).parent / "ota_sign.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+signer = _load_signer()
+
+
+@unittest.skipIf(signer is None, "cryptography not installed")
+class TestOtaSigning(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.key = os.path.join(d, "keys", "ota_signing_key.pem")
+        self.pub = os.path.join(d, "ota_pubkey.pem")
+        self.bin = os.path.join(d, "discus.bin")
+        _fake_image(self.bin)
+        signer.keygen(self.key, self.pub)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_private_key_is_owner_only(self):
+        self.assertEqual(os.stat(self.key).st_mode & 0o777, 0o600)
+
+    def test_keygen_never_overwrites(self):
+        with self.assertRaises(SystemExit):
+            signer.keygen(self.key, self.pub)
+
+    def test_sign_then_verify(self):
+        out = signer.sign(self.bin, self.key, self.pub)
+        self.assertEqual(out, self.bin + ".sig")
+        self.assertTrue(signer.verify(self.bin, self.pub))
+
+    def test_tampered_image_fails(self):
+        signer.sign(self.bin, self.key, self.pub)
+        with open(self.bin, "r+b") as f:
+            f.seek(0x200)
+            b = f.read(1)
+            f.seek(0x200)
+            f.write(bytes([b[0] ^ 1]))
+        self.assertFalse(signer.verify(self.bin, self.pub))
+
+    def test_wrong_key_fails(self):
+        other_key = os.path.join(self.tmp.name, "other.pem")
+        other_pub = os.path.join(self.tmp.name, "other.pub.pem")
+        signer.keygen(other_key, other_pub)
+        signer.sign(self.bin, other_key)
+        self.assertFalse(signer.verify(self.bin, self.pub))
+
+    def test_sign_refuses_key_that_does_not_match_firmware_pubkey(self):
+        other_key = os.path.join(self.tmp.name, "other.pem")
+        signer.keygen(other_key, os.path.join(self.tmp.name, "x.pem"))
+        with self.assertRaises(SystemExit):
+            signer.sign(self.bin, other_key, self.pub)
+        self.assertFalse(os.path.exists(self.bin + ".sig"))
+
+    def test_signature_is_der_and_fits_the_device_buffer(self):
+        signer.sign(self.bin, self.key, self.pub)
+        with open(self.bin + ".sig", "rb") as f:
+            sig = f.read()
+        self.assertEqual(sig[0], 0x30)          # ASN.1 SEQUENCE, as mbedTLS wants
+        self.assertLessEqual(len(sig), 72)      # SIG_MAX on the device is 80
+
+    def test_agent_serves_what_the_signer_wrote(self):
+        old = agent.FIRMWARE_BIN, agent.FIRMWARE_SIG
+        agent.FIRMWARE_BIN, agent.FIRMWARE_SIG = self.bin, self.bin + ".sig"
+        try:
+            signer.sign(self.bin, self.key, self.pub)
+            info = agent.firmware_info()
+        finally:
+            agent.FIRMWARE_BIN, agent.FIRMWARE_SIG = old
+        sig_file = os.path.join(self.tmp.name, "from_manifest.sig")
+        with open(sig_file, "wb") as f:
+            f.write(bytes.fromhex(info["sig"]))
+        self.assertTrue(signer.verify(self.bin, self.pub, sig_file))
 
 
 if __name__ == "__main__":

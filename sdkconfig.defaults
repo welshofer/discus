@@ -58,9 +58,15 @@ CONFIG_LV_FONT_MONTSERRAT_40=y
 CONFIG_LV_FONT_MONTSERRAT_44=y
 
 # ── Over-the-air updates ──────────────────────────────────────────────────
-# The agent serves firmware over plain HTTP on the LAN; the whole design
-# already assumes a trusted local network and keeps TLS on the Mac.
-CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+# The agent serves firmware over plain HTTP on the LAN, so the link is not
+# trusted: discus_ota.c streams the image with esp_ota_* and only sets the
+# boot partition after an ECDSA-P256 signature over it verifies against
+# main/ota_pubkey.pem. These are ESP-IDF's defaults, pinned because OTA
+# verification depends on them.
+CONFIG_MBEDTLS_PEM_PARSE_C=y
+CONFIG_MBEDTLS_ECP_C=y
+CONFIG_MBEDTLS_ECDSA_C=y
+CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y
 
 # Anti-bricking for a device that lives in another room: a freshly flashed
 # image boots in "pending verify" and is only marked valid once it has
