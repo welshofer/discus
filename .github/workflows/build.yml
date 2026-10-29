@@ -23,7 +23,10 @@ jobs:
           target: esp32p4
           path: '.'
           # TEMPORARY: seed the Kconfig value the solver needs on its first pass
-          command: mkdir -p build/config && echo '{"LV_USE_FREETYPE": false}' > build/config/sdkconfig.json && idf.py build
+          command: >-
+            mkdir -p build/config &&
+            printf '{"LV_USE_FREETYPE": false}' > build/config/sdkconfig.json &&
+            idf.py build
 
       - name: Upload dependencies.lock (temporary)
         if: always()
