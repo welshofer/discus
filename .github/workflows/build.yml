@@ -25,7 +25,7 @@ jobs:
           # TEMPORARY: seed the Kconfig value the solver needs on its first pass
           command: >-
             mkdir -p build/config &&
-            printf '{"LV_USE_FREETYPE": false}' > build/config/sdkconfig.json &&
+            printf "{\"LV_USE_FREETYPE\": false}" > build/config/sdkconfig.json &&
             idf.py build
 
       - name: Upload dependencies.lock (temporary)
