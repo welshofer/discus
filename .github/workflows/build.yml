@@ -22,6 +22,15 @@ jobs:
           esp_idf_version: v5.5
           target: esp32p4
           path: '.'
+          # TEMPORARY: seed the Kconfig value the solver needs on its first pass
+          command: mkdir -p build/config && echo '{"LV_USE_FREETYPE": false}' > build/config/sdkconfig.json && idf.py build
+
+      - name: Upload dependencies.lock (temporary)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependencies-lock
+          path: dependencies.lock
 
       - name: Report binary size
         run: |
