@@ -28,23 +28,9 @@
 #include "discus_net.h"
 #include "discus_ui.h"
 #include "discus_ota.h"
+#include "discus_creds.h"     /* WiFi credentials: wifi_creds.h or menuconfig */
 
 static const char *TAG = "discus";
-
-/* Credentials come from main/wifi_creds.h when present (gitignored, so the
- * password never reaches version control), otherwise from menuconfig. */
-#if defined(__has_include)
-#  if __has_include("wifi_creds.h")
-#    include "wifi_creds.h"
-#  endif
-#endif
-
-#ifndef DISCUS_WIFI_SSID_OVERRIDE
-#  define DISCUS_WIFI_SSID_OVERRIDE CONFIG_DISCUS_WIFI_SSID
-#endif
-#ifndef DISCUS_WIFI_PASSWORD_OVERRIDE
-#  define DISCUS_WIFI_PASSWORD_OVERRIDE CONFIG_DISCUS_WIFI_PASSWORD
-#endif
 
 #define LVGL_FOREVER    ((uint32_t)-1)
 #define POLL_INTERVAL_MS 3000

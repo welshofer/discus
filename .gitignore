@@ -12,3 +12,12 @@ main/wifi_creds.h
 
 # macOS
 .DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# OTA signing private key -- never commit. Only main/ota_pubkey.pem (the
+# public half) belongs in the repo. See README "Signed updates".
+/keys/
+*.sig

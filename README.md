@@ -16,7 +16,10 @@ The device is a **renderer**, nothing more. A small Python agent on your Mac
 collects everything — host stats, weather, stock quotes, RSS headlines, local
 Claude Code token usage — and serves it as one JSON document. The board does
 a single plaintext HTTP GET every three seconds and draws the result. No API
-keys, no TLS stack and no secrets live on the microcontroller.
+keys and no TLS stack live on the microcontroller; its only secrets are the
+WiFi password and a shared token for the agent. Firmware updates are
+signature-checked on the device, so the plain link is never trusted with
+what code runs.
 
 Built with ESP-IDF 5.5 and LVGL 9.5. No image assets: the weather icons are
 drawn from primitives and the clock face uses a purpose-built 128px font
@@ -88,7 +91,7 @@ thread, so a device request never blocks on a slow upstream.
 ### Tests
 
 ```sh
-uv run agent/test_agent.py         # 28 tests, no network required
+uv run agent/test_agent.py         # 50 tests, no network required
 ```
 
 Focused on logic that fails *silently*: Claude usage dedup, the Google News
@@ -97,6 +100,12 @@ by mutation testing -- deliberately reintroducing each of six known bugs
 (dropping `message.id` dedup, counting tool results as prompts, including
 sidechain prompts, `timegm` -> `mktime`, dropping the headline regex, losing
 the weekday/weekend split) makes the suite fail.
+
+The security side is covered the same way: the token check on every
+endpoint (over real loopback HTTP), refusing a LAN bind without a token,
+refusing to offer an unsigned or stale-signed image, and sign/verify/tamper
+round trips for `agent/ota_sign.py`. Removing any of those checks fails the
+suite.
 
 ### Panels
 
@@ -122,6 +131,29 @@ that dwell timer.
 uv run agent/discus_agent.py          # installs psutil + certifi on first run
 curl -s localhost:8787/metrics | python3 -m json.tool
 ```
+
+By default the agent listens on **127.0.0.1 only**. That is safe but the
+display cannot reach it, so for real use you opt in to the LAN explicitly,
+and a LAN bind **requires a shared token** -- the agent refuses to start
+without one:
+
+```sh
+python3 -c 'import secrets; print(secrets.token_urlsafe(24))'   # make a token
+export DISCUS_TOKEN=<that token>
+uv run agent/discus_agent.py --bind 0.0.0.0        # or DISCUS_BIND=0.0.0.0
+curl -s -H "X-Discus-Token: $DISCUS_TOKEN" <mac-ip>:8787/metrics
+```
+
+`--token-file PATH` reads the token from a file instead of the environment.
+Every endpoint (`/metrics`, `/firmware.json`, `/firmware.bin`) answers 401
+without the right `X-Discus-Token` header. That matters because between them
+they expose your host stats, location, Claude usage and a firmware image
+with your WiFi password compiled into it. Put the same token in
+`main/wifi_creds.h` as `DISCUS_AGENT_TOKEN_OVERRIDE` so the device sends it.
+
+The token travels over plain HTTP, so it keeps out casual LAN clients, not
+someone actively intercepting your WiFi traffic. Firmware integrity does
+not depend on it: that is the signature's job (below).
 
 The device must be pointed at your Mac's LAN address via
 `CONFIG_DISCUS_AGENT_URL` (`idf.py menuconfig` -> Discus Dashboard).
@@ -168,8 +200,50 @@ Rebuild and the update publishes itself; the device picks it up within five
 minutes.
 
 ```sh
-./dev.sh build          # that is the whole release process
+./dev.sh build          # builds, then signs build/discus.bin
 ```
+
+### Signed updates
+
+The download is plain HTTP, so the device trusts none of it. While streaming
+the image into the spare slot it hashes it, and only if an **ECDSA-P256 /
+SHA-256 signature** over those exact bytes verifies against the public key
+compiled into the *running* firmware does it call
+`esp_ota_set_boot_partition()`. A bad or missing signature leaves the current
+slot booting and wipes the rejected image's header so not even a rollback can
+select it. A build with no public key refuses every update.
+
+One-time setup:
+
+```sh
+python3 agent/ota_sign.py keygen    # or: uv run agent/ota_sign.py keygen
+#   keys/ota_signing_key.pem  private -- gitignored, never commit, back it up
+#   main/ota_pubkey.pem       public  -- commit this
+git add main/ota_pubkey.pem
+./dev.sh fullclean build            # CMake must re-run to embed the new key
+./dev.sh flash                      # once, over USB (see below)
+```
+
+After that, `./dev.sh build` signs every image it produces with
+`keys/ota_signing_key.pem` (override with `DISCUS_OTA_KEY`), writing
+`build/discus.bin.sig`; the agent puts the signature in `/firmware.json` and
+will not offer an image whose signature is missing or older than the image.
+`agent/ota_sign.py sign` also checks the signature against
+`main/ota_pubkey.pem`, so a key mismatch is caught on the Mac rather than as
+a silently refused update. `agent/ota_sign.py verify` checks an image by hand.
+
+> **One more cable.** Firmware from before signed updates installs anything
+> it is served, and cannot check a signature. The first signed build has to
+> go on over USB with `./dev.sh flash`; every update after that is wireless
+> and verified. Lose the private key and the same applies: generate a new
+> pair and reflash over USB.
+
+Why not ESP-IDF's built-in `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`? It
+trusts whichever key signed the *running* image's signature block, and it
+either signs at build time (so CI would need the private key) or needs a
+separate `espsecure.py` step. A small explicit check in `discus_ota.c`, a
+public key file in the source tree, and a CI build that compiles but refuses
+updates was easier to reason about for one device on a desk.
 
 **Anti-bricking.** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` means a freshly
 flashed image boots in `ESP_OTA_IMG_PENDING_VERIFY` and is confirmed only
@@ -215,6 +289,21 @@ Plist: `~/Library/LaunchAgents/com.welshofer.discus-agent.plist`.
 `KeepAlive` is on (verified: SIGKILL -> back in ~2s with a new pid) and
 `ThrottleInterval` is 10s so a startup crash-loop cannot spin.
 
+Since the agent now binds to loopback unless told otherwise, the plist must
+opt in to the LAN. Either add `--bind 0.0.0.0 --token-file
+/Users/<you>/.config/discus/token` to `ProgramArguments`, or set both in
+`EnvironmentVariables`:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+    <key>DISCUS_BIND</key>  <string>0.0.0.0</string>
+    <key>DISCUS_TOKEN</key> <string>your-agent-token</string>
+</dict>
+```
+
+(A token file with `chmod 600` keeps the secret out of the plist.)
+
 ### Claude usage: what is and is not knowable
 
 **The limit is measured in prompts, not tokens.** Anthropic publishes no
@@ -255,14 +344,18 @@ off by default.
 
 ```sh
 # 1. Agent on the Mac (installs psutil + certifi on first run)
-uv run agent/discus_agent.py
-curl -s localhost:8787/metrics | python3 -m json.tool
+export DISCUS_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+uv run agent/discus_agent.py --bind 0.0.0.0
+curl -s -H "X-Discus-Token: $DISCUS_TOKEN" localhost:8787/metrics | python3 -m json.tool
 
-# 2. Point the firmware at your Mac and give it WiFi
+# 2. Point the firmware at your Mac; give it WiFi and the same token
 cp main/wifi_creds.h.example main/wifi_creds.h   # gitignored; edit it
 ./dev.sh menuconfig        # Discus Dashboard -> Agent metrics URL
 
-# 3. Build and flash
+# 3. OTA signing key (once; commit main/ota_pubkey.pem, never keys/)
+python3 agent/ota_sign.py keygen
+
+# 4. Build and flash
 ./dev.sh build
 ./dev.sh flash
 ./dev.sh monitor
@@ -314,11 +407,13 @@ installing itself.
    default to save flash, and the failure is silent and baffling: `"%.0f%%"`
    renders as the literal `f%`. Format integers and round at the call site.
 
-8. **`__has_include` + ninja is a staleness trap.** `discus_main.c` guards on
-   `__has_include("wifi_creds.h")`. If the object file was already compiled
+8. **`__has_include` + ninja is a staleness trap.** `discus_creds.h` guards on
+   `__has_include("wifi_creds.h")`. If the object files were already compiled
    when that header did not exist, the depfile has no reference to it, so
    creating the header later triggers no rebuild and the override silently
-   does nothing. `touch main/discus_main.c` after creating it.
+   does nothing. `touch main/discus_creds.h` after creating it. The same
+   applies to `main/ota_pubkey.pem`: CMake only looks for it at configure
+   time, so run `./dev.sh reconfigure` (or `fullclean`) after `keygen`.
 
    Tell-tale sign: the binary jumps ~136 KB once credentials are real,
    because an empty SSID literal lets the compiler dead-code-eliminate the
