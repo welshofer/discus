@@ -28,12 +28,9 @@ jobs:
             printf "{\"LV_USE_FREETYPE\": false, \"LV_USE_LIBJPEG_TURBO\": false, \"LV_USE_LIBPNG\": false, \"LV_USE_LZ4\": false, \"LV_USE_LZ4_INTERNAL\": false}" > build/config/sdkconfig.json &&
             idf.py build
 
-      - name: Upload dependencies.lock (temporary)
+      - name: Print dependencies.lock (temporary)
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependencies-lock
-          path: dependencies.lock
+        run: echo LOCK-BEGIN && cat dependencies.lock && echo LOCK-END
 
       - name: Report binary size
         run: |
