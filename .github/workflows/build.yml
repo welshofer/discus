@@ -13,9 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug dependency walk (temporary)
-        run: python3 .github/debug/walk.py
-
       # main/wifi_creds.h is intentionally absent in CI. discus_creds.h guards
       # its include with __has_include, so the build falls back to the empty
       # menuconfig defaults and still compiles.
