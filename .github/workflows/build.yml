@@ -13,9 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug dependency walk (temporary)
-        run: python3 .github/debug/walk.py
-
       # main/wifi_creds.h is intentionally absent in CI. discus_creds.h guards
       # its include with __has_include, so the build falls back to the empty
       # menuconfig defaults and still compiles.
@@ -28,7 +25,7 @@ jobs:
           # TEMPORARY: seed the Kconfig value the solver needs on its first pass
           command: >-
             mkdir -p build/config &&
-            printf "{\"LV_USE_FREETYPE\": false}" > build/config/sdkconfig.json &&
+            printf "{\"LV_USE_FREETYPE\": false, \"LV_USE_LIBJPEG_TURBO\": false, \"LV_USE_LIBPNG\": false, \"LV_USE_LZ4\": false, \"LV_USE_LZ4_INTERNAL\": false}" > build/config/sdkconfig.json &&
             idf.py build
 
       - name: Upload dependencies.lock (temporary)
