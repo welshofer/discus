@@ -1,7 +1,6 @@
 # Build output
 build/
 managed_components/
-dependencies.lock
 
 # Machine-specific ESP-IDF config (regenerate from sdkconfig.defaults)
 sdkconfig

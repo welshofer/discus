@@ -1,6 +1,14 @@
 dependencies:
   idf: ">=5.5"
 
+  # Hold LVGL at 9.5.x. LVGL 9.6.0 (Sept 2026) declares an optional
+  # espressif/freetype dependency guarded by $CONFIG{LV_USE_FREETYPE}. On a
+  # fresh build (no dependencies.lock) that option doesn't exist yet, so the
+  # solver stops with MissingKconfigError. This entry must come before the
+  # BSP: the solver walks dependencies in order, and the BSP reaches LVGL
+  # through esp_lvgl_adapter, so a pin listed after it is seen too late.
+  lvgl/lvgl: "~9.5.0"
+
   # Waveshare BSP for the round-display ("XC") ESP32-P4 boards.
   # Covers both the 3.4C (800x800) and our 4C (720x720); the panel is
   # chosen via CONFIG_BSP_LCD_TYPE_720_720_4_INCH in sdkconfig.defaults.
