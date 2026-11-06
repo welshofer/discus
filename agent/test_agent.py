@@ -38,8 +38,17 @@ def iso(ts):
 class TestHeadlines(unittest.TestCase):
     def test_strips_google_news_publisher_suffix(self):
         self.assertEqual(
-            agent.clean_headline("Sunnyvale mother released by ICE - ktvu.com"),
+            agent.clean_headline("Sunnyvale mother released by ICE - ktvu.com",
+                                 strip_publisher=True),
             "Sunnyvale mother released by ICE")
+
+    def test_keeps_a_short_trailing_clause_by_default(self):
+        # BBC, NPR and Ars titles are not Google News: a " - clause" at the
+        # end is part of the headline and must survive (issue #4).
+        for t in ("Markets rally - on hopes of recovery",
+                  "Ukraine war - what we know so far",
+                  "Apple unveils M6 Macs - here's what changed"):
+            self.assertEqual(agent.clean_headline(t), t)
 
     def test_collapses_whitespace(self):
         self.assertEqual(agent.clean_headline("  a\n\n b \t c  "), "a b c")
@@ -56,7 +65,7 @@ class TestHeadlines(unittest.TestCase):
         # The suffix pattern is bounded to 40 chars precisely so that a real
         # em-dash clause in a headline survives.
         t = "Markets rally - on hopes of a long and sustained economic recovery"
-        self.assertEqual(agent.clean_headline(t), t)
+        self.assertEqual(agent.clean_headline(t, strip_publisher=True), t)
 
 
 class TestFeedParsing(unittest.TestCase):
@@ -68,7 +77,21 @@ class TestFeedParsing(unittest.TestCase):
     </channel></rss>"""
 
     def test_parses_and_limits(self):
-        self.assertEqual(agent.parse_feed(self.XML, limit=2), ["First", "Second"])
+        self.assertEqual(agent.parse_feed(self.XML, limit=2, strip_publisher=True),
+                         ["First", "Second"])
+
+    def test_keeps_titles_whole_unless_asked(self):
+        self.assertEqual(agent.parse_feed(self.XML, limit=2),
+                         ["First - Publisher", "Second"])
+
+    def test_only_google_news_strips_the_publisher(self):
+        xml = """<rss><channel>
+          <item><title>Markets rally - on hopes of recovery</title></item>
+        </channel></rss>"""
+        for feed in agent.FEEDS:
+            got = agent.parse_feed(xml, strip_publisher=feed.get("strip_publisher", False))
+            want = "Markets rally" if feed["key"] == "local" else "Markets rally - on hopes of recovery"
+            self.assertEqual(got, [want], feed["source"])
 
     def test_raises_when_no_items(self):
         with self.assertRaises(RuntimeError):
