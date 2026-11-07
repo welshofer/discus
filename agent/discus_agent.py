@@ -101,7 +101,10 @@ FEEDS = [
      "url": "https://feeds.npr.org/1001/rss.xml"},
     {"key": "tech", "label": "TECH", "source": "ARS TECHNICA",
      "url": "https://feeds.arstechnica.com/arstechnica/index"},
+    # Google News appends " - Publisher" to every title; only this feed
+    # has it stripped. The others keep their titles as the publisher wrote them.
     {"key": "local", "label": "SUNNYVALE", "source": "GOOGLE NEWS",
+     "strip_publisher": True,
      "url": "https://news.google.com/rss/search?q="
             + urllib.parse.quote(LOCAL_QUERY)
             + "&hl=en-US&gl=US&ceid=US:en"},
@@ -288,22 +291,26 @@ def fetch_stocks():
     return parse_quotes(http_json(url))
 
 
-def clean_headline(title):
-    """Normalise whitespace and drop Google News' trailing " - Publisher".
+def clean_headline(title, strip_publisher=False):
+    """Normalise whitespace; with strip_publisher, drop a trailing " - Publisher".
 
-    That suffix appears on every Google News item, costs a whole line on a
-    470px-wide label, and the source is already shown in the panel header."""
+    Google News appends that suffix to every item, where it costs a whole line
+    on a 470px-wide label and the source is already shown in the panel header.
+    Other feeds' titles can legitimately end in " - something", so the suffix
+    is only stripped for feeds that ask for it."""
     t = re.sub(r"\s+", " ", (title or "").strip())
-    return re.sub(r"\s+-\s+[^-]{2,40}$", "", t)
+    if strip_publisher:
+        t = re.sub(r"\s+-\s+[^-]{2,40}$", "", t)
+    return t
 
 
-def parse_feed(xml_text, limit=None):
+def parse_feed(xml_text, limit=None, strip_publisher=False):
     """RSS/Atom-ish XML -> list of cleaned headline strings."""
     limit = MAX_HEADLINES if limit is None else limit
     root = ET.fromstring(xml_text)
     items = []
     for item in root.iterfind(".//item"):
-        t = clean_headline(item.findtext("title"))
+        t = clean_headline(item.findtext("title"), strip_publisher)
         if t:
             items.append(t)
         if len(items) >= limit:
@@ -315,7 +322,8 @@ def parse_feed(xml_text, limit=None):
 
 def make_news_fetcher(feed):
     def fetch():
-        return parse_feed(http_text(feed["url"]))
+        return parse_feed(http_text(feed["url"]),
+                          strip_publisher=feed.get("strip_publisher", False))
     return fetch
 
 
